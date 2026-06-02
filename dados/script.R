@@ -43,4 +43,8 @@ parametros_robustos <- model_parameters(
 )
 parametros_robustos
 
-
+library(ggeffects)
+efeitos <- ggpredict(modelo_renda, terms = c("escolaridade", "sexo"))
+plot(efeitos) + 
+  theme_minimal() +
+  labs(title = "Renda Esperada Condicional", y = "Renda (R$)", x = "Nível de Instrução")
