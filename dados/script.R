@@ -29,8 +29,7 @@ modelo_renda <- glm(
   data = dados_trabalho
 )
 
-performance_modelo <- model_performance(modelo_renda)
-print(performance_modelo)
+(performance_modelo <- model_performance(modelo_renda))
 
 check_model(modelo_renda)
 
