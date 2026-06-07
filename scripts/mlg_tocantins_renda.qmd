@@ -1,0 +1,262 @@
+---
+title: "Determinantes da Renda no Tocantins"
+author: "Christian"
+date: today
+lang: pt
+format: 
+  pdf:
+    toc: true
+    toc-title: "Sumário"
+    number-sections: true
+    fig-pos: "H"
+    linestretch: 1.5
+    geometry:
+      - top=2.5cm
+      - bottom=2.5cm
+      - left=3cm
+      - right=2.5cm
+execute:
+  echo: false
+  warning: false
+  message: false
+---
+
+```{r}
+#| message: false
+#| warning: false
+#| results: hide
+
+library(tidyverse)
+library(ggplot2)
+library(easystats)
+library(see)
+
+# 1. Leitura e Limpeza Estrita
+dados_to <- read_csv("dados/tocantins.csv") |> 
+  mutate(
+    renda        = as.numeric(VD4016),
+    peso_norm    = as.numeric(V1028) / mean(as.numeric(V1028), na.rm = TRUE),
+    sexo         = as.factor(V2007),
+    idade        = as.numeric(V2009),
+    escolaridade = as.factor(VD3004),
+    formalidade  = as.factor(VD4012),
+    capital      = as.factor(if_else(grepl("Capital", V1023), "Capital", "Interior"))
+  ) |> 
+  mutate(
+    sexo = relevel(sexo, ref = "Homem")
+  ) |> 
+  filter(!is.na(escolaridade), !is.na(formalidade), !is.na(capital))
+```
+
+{{< pagebreak >}}
+
+# Introdução
+
+```{r}
+sumario <- dados_to |>
+  summarise(
+    n             = n(),
+    media_renda   = weighted.mean(renda, w = peso_norm, na.rm = TRUE),
+    mediana_renda = spatstat.univar::weighted.median(renda, w = peso_norm),
+    prop_mulher   = weighted.mean(sexo == "Mulher", w = peso_norm),
+    prop_formal   = weighted.mean(formalidade == "Contribuinte", w = peso_norm),
+    prop_interior = weighted.mean(capital == "Interior", w = peso_norm),
+    idade_media   = weighted.mean(idade, w = peso_norm, na.rm = TRUE)
+  )
+
+sumario |>
+  rename(
+    "N"              = n,
+    "Média Renda"    = media_renda,
+    "Mediana Renda"  = mediana_renda,
+    "% Mulheres"     = prop_mulher,
+    "% Formal"       = prop_formal,
+    "% Interior"     = prop_interior,
+    "Idade Média"    = idade_media
+  ) |>
+  knitr::kable(
+    digits  = 2,
+    caption = "Estatísticas descritivas da amostra — Tocantins, PNAD 2019"
+  )
+```
+
+Este relatório analisa os determinantes da renda do trabalho no estado do Tocantins com base nos microdados da PNAD Contínua do 4º Trimestre de 2019, extraídos via pacote `PNADcIBGE`. Após a exclusão de registros com renda nula ou ausente e a tipagem adequada das variáveis, a amostra final é composta por 3.107 indivíduos ocupados com renda positiva declarada.
+
+O perfil descritivo da amostra revela uma renda média de R\$ 1.813,00 e mediana de R\$ 1.090,00, evidenciando a assimetria característica da distribuição de 
+rendimentos, a média é 66% superior à mediana, indicando a presença de valores 
+extremos na cauda direita que puxam a média para cima. A amostra é composta por 
+aproximadamente 39,6% de mulheres, com idade média de 38,8 anos. Cerca de 54,4% 
+dos trabalhadores contribuem para a previdência social (proxy de formalidade), e 76,7% residem no interior do estado, reflexo da baixa concentração urbana 
+característica do Tocantins.
+
+Diante dessas características, assimetria positiva, suporte restrito a valores positivos e variância crescente com a média,, o Modelo Linear Generalizado (MLG) com distribuição Gama e função de ligação logarítmica se apresenta como a 
+abordagem estatística mais adequada para modelar a renda neste contexto.
+
+# Metodologia
+
+```{r}
+#| warning: false
+# Gráfico 1: Dispersão e Heterocedasticidade
+dados_to |> 
+  ggplot(aes(x = idade, y = renda, color = formalidade)) +
+  geom_point(alpha = 0.4, position = position_jitter(width = 1)) +
+  theme_minimal() +
+  labs(
+    title = "Gráfico 1 - Dispersão da Renda por Idade e Formalidade",
+    subtitle = "Evidência de heterocedasticidade estrutural (formato de leque)",
+    x = "Idade (Anos)",
+    y = "Renda Principal (R$)",
+    color = "Contribui p/ Previdência"
+  )
+```
+
+O Gráfico de dispersão evidencia a assimetria extrema e a heterocedasticidade intrínseca à acumulação de renda. A esmagadora maioria das observações encontra-se comprimida na base da distribuição (linha do piso salarial). Contudo, observa-se que a variabilidade e o limite superior dos rendimentos expandem-se abruptamente nas faixas etárias intermediárias e avançadas, em contraste com a dispersão contida dos trabalhadores mais jovens.
+
+```{r}
+#| warning: false
+#| message: false
+# Gráfico 2: Relação Média-Variância para justificar a Família Gama
+renda_agrupada <- dados_to |> 
+  mutate(Faixa_Idade = cut(idade, breaks = 10)) |> 
+  group_by(Faixa_Idade, escolaridade) |> 
+  summarise(
+    media_renda = mean(renda, na.rm = TRUE),
+    var_renda   = var(renda, na.rm = TRUE),
+    .groups     = "drop"
+  ) |> 
+  filter(media_renda > 0, var_renda > 0)
+
+renda_agrupada |> 
+  ggplot(aes(x = log(media_renda), y = log(var_renda))) +
+  geom_point(size = 3, alpha = 0.7, color = "#2c3e50") +
+  geom_smooth(method = "lm", se = FALSE, color = "#e74c3c", linewidth = 1) +
+  theme_minimal() +
+  labs(
+    title = "Gráfico 2 - Verificação Empírica da Função de Variância",
+    subtitle = "A inclinação positiva da reta exige um MLG com variância crescente",
+    x = "log(Médias Locais da Renda)",
+    y = "log(Variâncias Locais da Renda)"
+  )
+```
+
+A análise revela extrema assimetria na acumulação de renda, com forte compressão na base salarial e expansão da variância nas idades centrais. A regressão log-log confirma empiricamente essa dependência, apresentando inclinação estritamente positiva entre as médias e variâncias locais.
+
+```{r}
+modelo_variancia <- lm(log(var_renda) ~ log(media_renda), data = renda_agrupada)
+coef(modelo_variancia)
+```
+
+A relação log-log entre médias e variâncias locais apresenta inclinação aproximadamente igual a 2 (coeficiente estimado: 2,19), o que é a assinatura da distribuição Gama, cuja função de variância é $V(\mu) = \mu^2$. 
+
+
+## Ajuste MLG Gama
+
+```{r}
+#| echo: true
+modelo_to <- glm(
+  renda ~ sexo + idade + escolaridade + formalidade + capital,
+  family  = Gamma(link = "log"),
+  weights = peso_norm,
+  data    = dados_to
+)
+```
+
+
+## Correção robusta
+
+```{r}
+#| echo: true
+#| warning: false
+# Correção HC1 e Cluster
+model_parameters(
+  modelo_to, 
+  exponentiate = TRUE, 
+  vcov = "HC1", 
+  cluster = "UPA"
+)
+```
+
+Todos os preditores são estatisticamente significativos, exceto "Médio completo" e "Médio incompleto". Mulheres ganham em média 36% menos que homens (razão 0,64); não contribuintes à previdência ganham 30% menos; residentes no interior ganham 30% menos; e Superior completo eleva a renda esperada em 155% em relação à categoria de referência (Fundamental completo), o maior efeito isolado observado.
+
+# Resultados
+
+```{r}
+#| echo: true
+model_performance(modelo_to)
+```
+
+O $R^2$ de Nagelkerke igual a 0,531 indica que o modelo explica cerca de 53% da variabilidade da renda, um resultado razoável para dados de renda com alta dispersão natural. O sigma igual a 0,842 reflete o coeficiente de variação residual da Gama, quanto menor, melhor o ajuste relativo.
+
+```{r}
+#| include: false
+validacao <- check_model(modelo_to)
+lista_graficos <- plot(validacao, panel = FALSE)
+```
+
+
+```{r}
+#| echo: false
+lista_graficos[[1]] # Posterior Predictive Check
+```
+
+A curva prevista pelo modelo acompanha bem a curva observada, especialmente no pico e na cauda direita da distribuição. Há uma leve subestimação na região próxima a zero, mas no geral o modelo captura adequadamente a forma assimétrica da distribuição da renda.
+
+```{r}
+lista_graficos[[2]] # Homogeneity of Variance
+```
+
+A linha de referência é razoavelmente plana ao longo dos valores ajustados, com leve declínio nos extremos, sinal de que o modelo Gama absorve bem a heterocedasticidade observada no Gráfico 1, sem violações graves nesse aspecto.
+
+```{r}
+lista_graficos[[3]] # Influential Observations
+```
+
+A maioria dos pontos se encontra dentro das linhas de contorno (distância de Cook), com exceção de alguns poucos outliers nos extremos de leverage, as observações 817, 584, 2576 e 2038 merecem atenção, mas nenhuma delas apresenta leverage acima de 0,03, o que é baixo considerando o tamanho amostral.
+
+```{r}
+lista_graficos[[4]] # Collinearity
+```
+
+Todos os VIFs estão abaixo de 5, com o maior valor em "escolaridade" ($\approx$ 1,7), indicando ausência de multicolinearidade relevante. Os preditores são suficientemente independentes entre si, o que garante que os coeficientes estimados não estejam inflados por redundância entre variáveis.
+
+```{r}
+lista_graficos[[5]] # Distribution of Quantile Residuals
+```
+
+Os pontos seguem a diagonal de forma bastante próxima, com pequenos desvios nas caudas, padrão esperado para dados de renda. Isso confirma que os resíduos quantílicos se distribuem aproximadamente como esperado sob o modelo Gama, indicando bom ajuste distribucional global.
+
+
+```{r}
+#| warning: false
+#| message: false
+
+predicoes <- estimate_relation(modelo_to, at = c("escolaridade", "sexo"))
+
+ggplot(predicoes, aes(x = escolaridade, y = Predicted, color = sexo, group = sexo)) +
+  geom_line(position = position_dodge(width = 0.4), linewidth = 0.8) +
+  geom_errorbar(aes(ymin = CI_low, ymax = CI_high), position = position_dodge(width = 0.4), width = 0.2, linewidth = 0.8) +
+  geom_point(position = position_dodge(width = 0.4), size = 2.5) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 30, hjust = 1)) +
+  labs(
+    title = "Renda Esperada por Escolaridade e Sexo",
+    subtitle = "Estimativas condicionais com intervalos de confiança (Ceteris Paribus)",
+    x = "Nível de Instrução Mais Elevado",
+    y = "Renda Predita Mensal (R$)",
+    color = "Sexo"
+  )
+```
+
+A escolaridade tem efeito crescente e não-linear sobre a renda predita: até o nível médio as diferenças são modestas, mas o salto no nível superior é expressivo, especialmente para homens, que atingem renda predita acima de R\$ 10.000 com Superior completo, contra cerca de R\$ 5.000 para mulheres no mesmo nível, evidenciando uma interação implícita entre escolaridade e gênero que persiste mesmo com demais variáveis controladas.
+
+# Conclusão
+
+Este estudo modelou a renda do trabalho no Tocantins utilizando um MLG Gama com 
+função de ligação logarítmica, incorporando pesos amostrais e correção robusta de variância. O modelo apresentou R² de Nagelkerke de 0,531, explicando cerca de 53% da variabilidade da renda, resultado expressivo dado o elevado grau de dispersão intrínseco a dados de rendimento.
+
+Os resultados evidenciam desigualdades estruturais persistentes no mercado de 
+trabalho tocantinense. A escolaridade revelou-se o preditor de maior magnitude: 
+trabalhadores com ensino superior completo apresentam renda esperada 155% superior à da categoria de referência (fundamental completo), ao passo que indivíduos sem instrução ganham 38% menos. O hiato de gênero também é expressivo, mulheres recebem, em média, 36% menos que homens com características observáveis idênticas, resultado estatisticamente robusto (p < 0,001). A informalidade e a localização no interior do estado implicam, cada uma, redução de aproximadamente 30% na renda esperada, sugerindo que a estrutura produtiva regional e o acesso ao mercado formal são determinantes centrais da remuneração. A idade contribui positivamente, porém de forma modesta (razão 1,01 por ano adicional).
+
+O diagnóstico residual confirmou a adequação do modelo: os resíduos quantílicos 
+alinham-se à diagonal esperada, a homogeneidade de variância é satisfatória e não há multicolinearidade relevante entre os preditores (VIF < 5). Em conjunto, esses achados reforçam que as desigualdades de renda no Tocantins têm raízes educacionais, de gênero e de inserção no mercado formal, demandando políticas públicas direcionadas a esses eixos.
